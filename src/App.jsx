@@ -1,43 +1,29 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import "./App.css";
-
-const defaultState = {
-  user: { name: "Jhan Valbuena", email: "jhan.valbuena@hometask.com", lang: "Español" },
-  tasks: [
-    { id: 1, name: "Limpiar el jardín frontal", assign: "Jhan", date: "", time: "14:00", cat: "exterior", prio: "high", status: "pending", desc: "Barrer hojas, podar arbustos y regar plantas.", notes: ["Recordar usar guantes"] },
-    { id: 2, name: "Pagar factura de luz", assign: "Eduin", date: "", time: "", cat: "pagos", prio: "high", status: "done", desc: "Pagar antes del vencimiento.", notes: [] },
-    { id: 3, name: "Organizar despensa", assign: "Elena", date: "", time: "", cat: "interior", prio: "med", status: "process", desc: "Revisar fechas de vencimiento.", notes: [] },
-  ],
-  members: ["Eduin Valbuena", "Elena Ruiz", "Mateo Valbuena", "Sofía Ruiz"],
-  notifs: [
-    { id: 1, title: "Nueva tarea asignada", sub: "Limpiar el jardín frontal", read: false },
-    { id: 2, title: "Eduin completó tarea", sub: "Pagar factura de luz", read: false },
-  ],
-};
+import { authService, taskService } from "./services/api";
+import { useAuth, AuthProvider } from "./context/AuthContext";
+import { useTasks } from "./hooks/useTasks";
 
 const STATUS = { pending: "Pendiente", process: "En proceso", done: "Completada" };
 
-function App() {
-  const [view, setView] = useState("onboard");
-  const [state, setState] = useState(defaultState);
+function AppContent() {
+  const { user, loading, login, register, logout } = useAuth();
+  const { tasks, loadTasks, createTask, updateTask, changeTaskStatus, deleteTask } = useTasks();
+  
+  const [view, setView] = useState(user ? "dashboard" : "onboard");
   const [toast, setToast] = useState("");
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const [taskFilter, setTaskFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ name: "", desc: "", assign: "Jhan", date: "", time: "", cat: "interior", prio: "med" });
-
-  const currentTask = state.tasks.find((t) => t.id === currentTaskId);
-  const unread = state.notifs.filter((n) => !n.read).length;
-  const filteredTasks = useMemo(
-    () =>
-      state.tasks.filter((t) => {
-        const byFilter = taskFilter === "all" || t.status === taskFilter;
-        const q = search.toLowerCase();
-        const bySearch = !q || t.name.toLowerCase().includes(q) || t.assign.toLowerCase().includes(q);
-        return byFilter && bySearch;
-      }),
-    [state.tasks, taskFilter, search],
-  );
+  const [form, setForm] = useState({ name: "", desc: "", assign: user?.name || "Usuario", date: "", time: "", cat: "interior", prio: "med" });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [members, setMembers] = useState([]);
+  const [notifs, setNotifs] = useState([]);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [registerName, setRegisterName] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
 
   const showToast = (message) => {
     setToast(message);
@@ -46,31 +32,95 @@ function App() {
 
   const go = (targetView) => setView(targetView);
 
-  const createOrUpdateTask = () => {
-    if (!form.name.trim()) return showToast("El título es obligatorio");
-    if (currentTaskId) {
-      setState((prev) => ({
-        ...prev,
-        tasks: prev.tasks.map((t) => (t.id === currentTaskId ? { ...t, ...form, name: form.name.trim() } : t)),
-      }));
-      showToast("Tarea actualizada");
-    } else {
-      const nextId = Math.max(...state.tasks.map((t) => t.id), 0) + 1;
-      setState((prev) => ({
-        ...prev,
-        tasks: [{ ...form, id: nextId, status: "pending", notes: [] }, ...prev.tasks],
-        notifs: [{ id: Date.now(), title: "Nueva tarea creada", sub: form.name.trim(), read: false }, ...prev.notifs],
-      }));
-      showToast("Tarea creada");
+  // Cargar tareas al montar el componente
+  useEffect(() => {
+    if (user) {
+      loadTasks().catch(err => showToast(`Error: ${err.message}`));
     }
-    setView("tasks");
-    setCurrentTaskId(null);
-    setForm({ name: "", desc: "", assign: "Jhan", date: "", time: "", cat: "interior", prio: "med" });
+  }, [user, loadTasks]);
+
+  // Cambiar vista según autenticación
+  useEffect(() => {
+    if (loading) return;
+    if (!user && view !== "onboard" && view !== "login" && view !== "registro") {
+      setView("onboard");
+    }
+  }, [user, loading, view]);
+
+  const currentTask = tasks.find((t) => t.id === currentTaskId);
+  const unread = notifs.filter((n) => !n.read).length;
+  const filteredTasks = useMemo(
+    () =>
+      tasks.filter((t) => {
+        const byFilter = taskFilter === "all" || t.status === taskFilter;
+        const q = search.toLowerCase();
+        const bySearch = !q || t.name.toLowerCase().includes(q) || (t.assign && t.assign.toLowerCase().includes(q));
+        return byFilter && bySearch;
+      }),
+    [tasks, taskFilter, search],
+  );
+
+  const handleLogin = async (email, password) => {
+    try {
+      setIsSubmitting(true);
+      await login(email, password);
+      showToast("¡Bienvenido!");
+      setView("dashboard");
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRegister = async (email, password, name) => {
+    try {
+      setIsSubmitting(true);
+      await register(email, password, name);
+      showToast("¡Cuenta creada! Bienvenido");
+      setView("dashboard");
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      showToast("Sesión cerrada");
+      setView("onboard");
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    }
+  };
+
+  const createOrUpdateTask = async () => {
+    if (!form.name.trim()) return showToast("El título es obligatorio");
+    
+    try {
+      setIsSubmitting(true);
+      if (currentTaskId) {
+        await updateTask(currentTaskId, form);
+        showToast("Tarea actualizada");
+      } else {
+        await createTask(form);
+        showToast("Tarea creada");
+      }
+      setView("tasks");
+      setCurrentTaskId(null);
+      setForm({ name: "", desc: "", assign: user?.name || "Usuario", date: "", time: "", cat: "interior", prio: "med" });
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const openNewTask = () => {
     setCurrentTaskId(null);
-    setForm({ name: "", desc: "", assign: "Jhan", date: "", time: "", cat: "interior", prio: "med" });
+    setForm({ name: "", desc: "", assign: user?.name || "Usuario", date: "", time: "", cat: "interior", prio: "med" });
     go("new-task");
   };
 
@@ -80,18 +130,23 @@ function App() {
     go("new-task");
   };
 
-  const cycleStatus = (id) => {
-    const cycle = ["pending", "process", "done"];
-    setState((prev) => ({
-      ...prev,
-      tasks: prev.tasks.map((t) => (t.id === id ? { ...t, status: cycle[(cycle.indexOf(t.status) + 1) % cycle.length] } : t)),
-    }));
+  const cycleStatus = async (id) => {
+    try {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      const cycle = ["pending", "process", "done"];
+      const newStatus = cycle[(cycle.indexOf(task.status) + 1) % cycle.length];
+      await changeTaskStatus(id, newStatus);
+      showToast("Estado actualizado");
+    } catch (err) {
+      showToast(`Error: ${err.message}`);
+    }
   };
 
   const dashboardCount = {
-    pending: state.tasks.filter((t) => t.status === "pending").length,
-    process: state.tasks.filter((t) => t.status === "process").length,
-    done: state.tasks.filter((t) => t.status === "done").length,
+    pending: tasks.filter((t) => t.status === "pending").length,
+    process: tasks.filter((t) => t.status === "process").length,
+    done: tasks.filter((t) => t.status === "done").length,
   };
 
   const viewContent = {
@@ -99,39 +154,83 @@ function App() {
       <div className="screen center">
         <h1>Bienvenido a HomeTask</h1>
         <p>La forma más simple de organizar las tareas del hogar en familia.</p>
-        <button className="btn-o" onClick={() => go("login")}>Comenzar</button>
-        <button className="btn-ol" onClick={() => go("login")}>Ya tengo cuenta</button>
+        <button className="btn-o" onClick={() => go("registro")}>Crear cuenta</button>
+        <button className="btn-ol" onClick={() => go("login")}>Iniciar sesión</button>
       </div>
     ),
     login: (
       <div className="screen">
         <h2>Iniciar sesión</h2>
-        <input className="fi" placeholder="Correo electrónico" />
-        <input className="fi" type="password" placeholder="Contraseña" />
-        <button className="btn-o" onClick={() => go("dashboard")}>Entrar</button>
+        <input 
+          className="fi" 
+          placeholder="Correo electrónico" 
+          value={loginEmail}
+          onChange={(e) => setLoginEmail(e.target.value)}
+          disabled={isSubmitting}
+        />
+        <input 
+          className="fi" 
+          type="password" 
+          placeholder="Contraseña"
+          value={loginPassword}
+          onChange={(e) => setLoginPassword(e.target.value)}
+          disabled={isSubmitting}
+        />
+        <button 
+          className="btn-o" 
+          onClick={() => handleLogin(loginEmail, loginPassword)}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? "Cargando..." : "Entrar"}
+        </button>
         <button className="link" onClick={() => go("registro")}>Crear cuenta</button>
       </div>
     ),
     registro: (
       <div className="screen">
         <Top title="Crear cuenta" onBack={() => go("login")} />
-        <input className="fi" placeholder="Nombre completo" />
-        <input className="fi" placeholder="Correo electrónico" />
-        <input className="fi" type="password" placeholder="Contraseña" />
-        <button className="btn-o" onClick={() => go("dashboard")}>Registrarme</button>
+        <input 
+          className="fi" 
+          placeholder="Nombre completo" 
+          value={registerName}
+          onChange={(e) => setRegisterName(e.target.value)}
+          disabled={isSubmitting}
+        />
+        <input 
+          className="fi" 
+          placeholder="Correo electrónico" 
+          value={registerEmail}
+          onChange={(e) => setRegisterEmail(e.target.value)}
+          disabled={isSubmitting}
+        />
+        <input 
+          className="fi" 
+          type="password" 
+          placeholder="Contraseña"
+          value={registerPassword}
+          onChange={(e) => setRegisterPassword(e.target.value)}
+          disabled={isSubmitting}
+        />
+        <button 
+          className="btn-o" 
+          onClick={() => handleRegister(registerEmail, registerPassword, registerName)}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? "Cargando..." : "Registrarme"}
+        </button>
       </div>
     ),
     dashboard: (
       <div className="screen">
         <Top title="HomeTask" right={<button className="tb-icon" onClick={() => go("notif")}>🔔{unread > 0 ? "•" : ""}</button>} />
-        <h2>Hola, {state.user.name.split(" ")[0]}!</h2>
+        <h2>Hola, {user?.name?.split(" ")[0] || "Usuario"}!</h2>
         <div className="stats">
           <Stat label="Pendientes" value={dashboardCount.pending} />
           <Stat label="Proceso" value={dashboardCount.process} />
           <Stat label="Hechas" value={dashboardCount.done} />
         </div>
         <div className="sh"><h3>Mis tareas</h3><button className="link" onClick={() => go("tasks")}>Ver todo</button></div>
-        {state.tasks.slice(0, 4).map((t) => <TaskCard key={t.id} t={t} onOpen={() => { setCurrentTaskId(t.id); go("detail"); }} />)}
+        {tasks.slice(0, 4).map((t) => <TaskCard key={t.id} t={t} onOpen={() => { setCurrentTaskId(t.id); go("detail"); }} />)}
         <button className="fab" onClick={openNewTask}>+</button>
         <Nav go={go} active="dashboard" />
       </div>
@@ -185,7 +284,7 @@ function App() {
     notif: (
       <div className="screen">
         <Top title="Notificaciones" onBack={() => go("dashboard")} />
-        {state.notifs.map((n) => (
+        {notifs.map((n) => (
           <div key={n.id} className="card">
             <strong>{n.title}</strong>
             <p>{n.sub}</p>
@@ -196,25 +295,25 @@ function App() {
     miembros: (
       <div className="screen">
         <Top title="Miembros" onBack={() => go("dashboard")} />
-        {state.members.map((m) => <div className="card" key={m}>{m}</div>)}
+        {members.map((m) => <div className="card" key={m}>{m}</div>)}
         <Nav go={go} active="miembros" />
       </div>
     ),
     reportes: (
       <div className="screen">
         <Top title="Reportes" onBack={() => go("perfil")} />
-        <h2>{Math.round((dashboardCount.done / Math.max(1, state.tasks.length)) * 100)}%</h2>
+        <h2>{Math.round((dashboardCount.done / Math.max(1, tasks.length)) * 100)}%</h2>
         <p>Porcentaje de tareas completadas</p>
       </div>
     ),
     perfil: (
       <div className="screen">
         <Top title="Perfil" onBack={() => go("dashboard")} />
-        <div className="card"><strong>{state.user.name}</strong><p>{state.user.email}</p></div>
+        <div className="card"><strong>{user?.name}</strong><p>{user?.email}</p></div>
         <button className="btn-ol" onClick={() => go("idioma")}>Idioma</button>
         <button className="btn-ol" onClick={() => go("reportes")}>Reportes</button>
         <button className="btn-ol" onClick={() => go("miembros")}>Miembros</button>
-        <button className="btn-o" onClick={() => go("onboard")}>Cerrar sesión</button>
+        <button className="btn-o" onClick={handleLogout}>Cerrar sesión</button>
         <Nav go={go} active="perfil" />
       </div>
     ),
@@ -222,7 +321,7 @@ function App() {
       <div className="screen">
         <Top title="Idioma" onBack={() => go("perfil")} />
         {["Español", "English", "Français", "Português"].map((lang) => (
-          <button key={lang} className={`lang-opt ${state.user.lang === lang ? "sel" : ""}`} onClick={() => setState({ ...state, user: { ...state.user, lang } })}>
+          <button key={lang} className="lang-opt" onClick={() => {}}>
             {lang}
           </button>
         ))}
@@ -237,6 +336,14 @@ function App() {
         {viewContent[view]}
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 
